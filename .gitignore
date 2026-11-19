@@ -7,3 +7,4 @@ reports/*
 !reports/.gitkeep
 tests/*.log
 !tests/sample_uptime.log
+requirements.md
