@@ -1,5 +1,9 @@
-requirements.md
 logs/*.log
 logs/state/*
+!logs/state/.gitkeep
+logs/archive/*
+logs/monitor.lock
 reports/*
+!reports/.gitkeep
 tests/*.log
+!tests/sample_uptime.log
