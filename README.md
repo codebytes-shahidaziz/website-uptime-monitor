@@ -1,205 +1,229 @@
 # Website Uptime Monitor
 
-A lightweight, modular, zero-dependency website monitoring and alerting tool written in pure **POSIX-compliant Bash**. Automatically monitors site health, tracks response times in milliseconds, sends state-change alerts, monitors SSL certificate validity, and generates analytical uptime reports.
+A lightweight, modular website monitoring and alerting tool written in **Bash 4+**. It checks whether websites are up, measures response time in milliseconds, logs every check, sends alerts when a site goes down or recovers, checks SSL certificate expiry, and generates uptime reports. It only needs standard Linux tools.
 
 ## Features
 
-- **Multi-Site Monitoring**: Efficiently checks all target URLs listed in `config/sites.conf`.
-
-- **Precision Latency Tracking**: Captures HTTP total response time converted directly into milliseconds (`ms`).
-
-- **State Change Alerts**: Triggers notifications (Email ) **only** when a site transitions (UP ➔ DOWN or DOWN ➔ UP) to eliminate spam.
-
-- **Retry Logic**: Minimizes false alarms caused by transient network glitches by retrying failed checks up to a configurable `$RETRIES` count.
-
-- **SSL Certificate Expiry Checks**: Dedicated SSL validator (`lib/ssl_check.sh`) monitors TLS certificate validity.
-
-- **Log Retention & Rotation**: Automated cleanup of legacy log files using `cleanup.sh`.
-
-- **Analytical Reporting**: Generates detailed metrics including uptime percentage, average latency, and total failure events using `report.sh`.
+- **Multi-site monitoring**: checks every URL listed in `config/sites.conf`, or a single URL with `-u`.
+- **Response time in milliseconds**: measured with `curl` for every check.
+- **Three states**: `UP`, `SLOW` (answered, but slower than `SLOW_THRESHOLD_MS`) and `DOWN` (error status or no answer).
+- **Retry logic**: a failed check is retried up to `RETRIES` times before the site is marked DOWN, so one network glitch does not cause a false alarm.
+- **State change alerts**: Email and Telegram alerts are sent **only** when a site changes state (UP to DOWN, or DOWN to UP). No spam while a site stays down.
+- **Network outage detection**: if every site fails, the monitor checks its own internet connection first. If our internet is down, it logs `NETWORK_DOWN` and sends no alerts.
+- **Lock file**: two monitors can never run at the same time.
+- **Daemon mode**: `-d` keeps the monitor running and repeats every `CHECK_INTERVAL` seconds, without cron.
+- **SSL certificate check**: `lib/ssl_check.sh` shows how many days are left on each certificate.
+- **Reports**: `report.sh` shows uptime percentage, average and slowest response time and downtime events per site.
+- **Log cleanup**: `cleanup.sh` removes old log lines after `LOG_RETENTION_DAYS`.
 
 ## Project Structure
 
 ```
 website-uptime-monitor/
-├── monitor.sh              # Main monitoring execution script
-├── report.sh               # Uptime report generator CLI tool
-├── cleanup.sh              # Log retention and state cleanup utility
-├── install.sh              # Installer & environment setup script
-├── LICENSE                 # MIT License
-├── README.md               # Project documentation
-├── requirements.md         # Full project functional specification
+├── monitor.sh                 # Main monitoring script
+├── report.sh                  # Uptime report generator
+├── cleanup.sh                 # Log retention and cleanup
+├── install.sh                 # Setup script (folders, permissions, cron)
+├── LICENSE                    # MIT License
+├── README.md                  # This file
 ├── config/
-│   ├── monitor.conf        # Global application settings
-│   └── sites.conf          # List of target URLs to monitor
+│   ├── monitor.conf           # Global settings
+│   └── sites.conf             # URLs to monitor
 ├── lib/
-│   ├── alert.sh            # Email and Telegram notification functions
-│   ├── help.sh             # Command-line usage & help menu helper
-│   ├── ssl_check.sh        # SSL certificate validity inspector
-│   └── utils.sh            # Shared utility and validation functions
-├── logs/
-│   ├── uptime.log          # Complete chronological log of all checks
-│   ├── failure.log         # Filtered failure-only log
-│   └── state/              # Persistent site state tracking files
-├── reports/                # Destination folder for generated reports
+│   ├── alert.sh               # Email and Telegram alerts
+│   ├── help.sh                # Help text for all scripts
+│   ├── ssl_check.sh           # SSL certificate expiry checker
+│   └── utils.sh               # Shared helper functions
+├── logs/                      # Created at runtime, not committed
+│   ├── uptime.log             # Every check
+│   ├── failure.log            # Only SLOW and DOWN checks
+│   ├── cron.log               # Output of cron runs
+│   ├── archive/               # Compressed old logs
+│   └── state/                 # Last known state of each site
+├── reports/                   # Saved reports
 └── tests/
-    ├── generate_sample_log.sh # Mock log generator for testing
-    ├── sample_uptime.log   # Sample dataset for testing report calculations
-    └── test_cases.md       # Quality assurance test scenarios
-
+    ├── generate_sample_log.sh # Creates fake log data for testing
+    ├── sample_uptime.log      # Generated sample data
+    ├── test_cases.md          # Test table with results
+    └── screenshots/           # Screenshots of the tests
 ```
 
-## Installation & Setup
+## Installation
 
-1. **Clone the Repository:**
+```
+git clone https://github.com/your-username/website-uptime-monitor.git
+cd website-uptime-monitor
+chmod +x install.sh
+./install.sh
+```
 
-   ```
-   git clone https://github.com/your-username/website-uptime-monitor.git
-   cd website-uptime-monitor
-   ```
-
-2. **Run the Installer:**
-   Make `install.sh` executable and run it to setup required directory permissions and verify dependencies:
-
-   ```
-   chmod +x install.sh
-   ./install.sh
-   ```
+The installer checks that `curl` and Bash 4+ are available, creates the folders, makes the scripts executable and (if you agree) adds the cron jobs. Use `./install.sh --yes` to skip the questions and `./install.sh --uninstall` to remove the cron jobs again.
 
 ## Configuration
 
-### 1. `config/sites.conf`
+### `config/sites.conf`
 
-List target URLs to monitor (one per line). Lines starting with `#` are treated as comments:
+One URL per line. Empty lines and lines starting with `#` are ignored.
 
 ```
-# Production Web Endpoints
 https://www.google.com
 https://www.github.com
-https://example.com
-
-# Disabled endpoints
-# https://staging.example.internal
-
+# https://disabled-site.example.com
 ```
 
-### 2. `config/monitor.conf`
-
-Configure runtime parameters and notification settings:
+### `config/monitor.conf`
 
 ```
-# Monitoring Parameters
-TIMEOUT=10                 # Maximum seconds to wait for cURL response
-RETRIES=3                  # Number of retry attempts before marking DOWN
-RETRY_DELAY=5              # Delay between retry attempts in seconds
-SLOW_THRESHOLD_MS=2000     # Threshold (in ms) to mark a response as SLOW
-LOG_RETENTION_DAYS=30      # Auto-purge logs older than N days
+TIMEOUT=10                 # Max seconds to wait for a response
+RETRIES=3                  # Attempts before a site is marked DOWN
+RETRY_DELAY=5              # Seconds between attempts
+SLOW_THRESHOLD_MS=2000     # Slower than this is marked SLOW
+CHECK_INTERVAL=300         # Seconds between checks in daemon mode (-d)
+LOG_DIR="./logs"
+LOG_RETENTION_DAYS=30      # cleanup.sh removes older log lines
 
-# Email Notifications
-ENABLE_EMAIL=true
+# Alerts
+ENABLE_EMAIL=false
 ALERT_EMAIL="admin@example.com"
+ENABLE_TELEGRAM=false
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_CHAT_ID=""
 ```
 
 ## Usage
 
-### Monitoring Script (`monitor.sh`)
+### monitor.sh
 
 ```
-# Run one check cycle using default configuration paths
-./monitor.sh
-
-# Run using a custom monitor configuration file
-./monitor.sh -c ./config/custom_monitor.conf
-
-# Run using a custom sites list
-./monitor.sh -s ./config/production_sites.conf
-
-# Display help menu
-./monitor.sh -h
+./monitor.sh                      # one check of all sites
+./monitor.sh -u https://example.com   # check one URL only
+./monitor.sh -c my_monitor.conf   # use another settings file
+./monitor.sh -s my_sites.conf     # use another sites file
+./monitor.sh -d                   # daemon mode, repeat every CHECK_INTERVAL seconds
+./monitor.sh -v                   # verbose, show every retry
+./monitor.sh -h                   # help
 ```
 
-### Reporting Tool (`report.sh`)
+### report.sh
 
 ```
-# Generate overall report for all recorded logs
-./report.sh
-
-# Generate report for a specific date (YYYY-MM-DD)
-./report.sh -d 2026-03-31
-
-# Generate summary report for the last 7 days
-./report.sh -w
+./report.sh                       # all data
+./report.sh -d 2026-03-31         # one day
+./report.sh -w                    # last 7 days
+./report.sh -s                    # also save to reports/report_YYYY-MM-DD.txt
+./report.sh -f tests/sample_uptime.log   # use another log file
 ```
 
-### Log Cleanup (`cleanup.sh`)
-
-Purges logs and temporary files older than the configured `LOG_RETENTION_DAYS`:
+### cleanup.sh
 
 ```
-./cleanup.sh
+./cleanup.sh                      # remove log lines older than LOG_RETENTION_DAYS
+./cleanup.sh --dry-run            # only show what would be removed
+./cleanup.sh --compress           # keep the removed lines in logs/archive/ as .gz
+```
+
+### lib/ssl_check.sh
 
 ```
+./lib/ssl_check.sh                # check all https sites in sites.conf
+./lib/ssl_check.sh -u https://www.github.com
+./lib/ssl_check.sh -w 30          # warn when fewer than 30 days are left
+```
+
+Each site is shown as `OK`, `WARNING` (fewer than 14 days left by default), `EXPIRED` or `ERROR` (could not connect).
 
 ## Sample Output
 
-### Terminal Console Output
+### Console output of monitor.sh
 
 ```
-=====================================================
-   WEBSITE UPTIME MONITOR  -  2026-03-31 14:30:02
-=====================================================
-Success: https://www.google.com (Status: 200, Time: 142ms)
-Success: https://www.github.com (Status: 200, Time: 310ms)
-Warning: https://example.com (Status: 200, Time: 2450ms) [SLOW]
-Server down: https://broken-site.xyz (Status: 000, Time: timeout)
------------------------------------------------------
+====================================================
+   WEBSITE UPTIME MONITOR  -  2026-11-21 14:30:02
+====================================================
+[ UP   ]  https://www.google.com          200    142ms
+[ UP   ]  https://www.github.com          200    310ms
+[ SLOW ]  https://example.com             200    2450ms
+[ DOWN ]  https://broken-site.xyz         000    timeout
+------------------------------------------
 Checked: 4 | Up: 2 | Slow: 1 | Down: 1
-
 ```
 
-### Raw Log Structure (`logs/uptime.log`)
+### Log format (`logs/uptime.log`)
 
 ```
-2026-03-31 14:30:02 | https://www.google.com | UP   | 200 | 142ms
-2026-03-31 14:30:07 | https://broken-site.xyz | DOWN | 000 | timeout
+2026-11-21 14:30:02 | https://www.google.com | UP | 200 | 142ms
+2026-11-21 14:30:09 | https://example.com | SLOW | 200 | 2450ms
+2026-11-21 14:30:27 | https://broken-site.xyz | DOWN | 000 | timeout
+2026-11-21 15:00:02 | NETWORK_DOWN | DOWN | 000 | timeout
+```
 
+The fields are timestamp, URL, status, HTTP code and response time. A `NETWORK_DOWN` line means our own internet was off during that check. It is not a website and is ignored by the report. `failure.log` has the same format but only contains SLOW and DOWN lines.
+
+### Report from report.sh
+
+<!-- Replace this block with the real output of: ./report.sh -f tests/sample_uptime.log -->
+
+```
+(paste the output of ./report.sh here)
 ```
 
 ## Cron Automation
 
-To enable 24/7 background monitoring and automated reports, add the following cron jobs (`crontab -e`):
+`./install.sh` adds these three jobs for you. To add them by hand, run `crontab -e` and use your real path:
 
 ```
-# Run monitoring check every 5 minutes
 */5 * * * * /bin/bash /path/to/website-uptime-monitor/monitor.sh >> /path/to/website-uptime-monitor/logs/cron.log 2>&1
-
-# Run daily log cleanup at midnight
 0 0 * * * /bin/bash /path/to/website-uptime-monitor/cleanup.sh >> /path/to/website-uptime-monitor/logs/cron.log 2>&1
-
-# Send daily report at 8:00 AM for yesterday's activity
 0 8 * * * /bin/bash /path/to/website-uptime-monitor/report.sh -d $(date -d yesterday +\%F)
-
 ```
 
 ## Alert System
 
-- **State Persistence**: State tracking files stored in `logs/state/` store the previous status of every checked host.
+The monitor remembers the last state of every site in `logs/state/`. A `SLOW` site still counts as up, because it answered. Alerts are sent in these cases only:
 
-- **Anti-Spam Filter**: Notifications are only dispatched when status transitions:
-  - **DOWN Event**: Triggered when a host changes state from `UP` ➔ `DOWN`.
+| Event | When | Alert |
+|-------|------|-------|
+| Site goes down | UP to DOWN, or the very first check fails | `DOWN` alert with status code and response time |
+| Site recovers | DOWN to UP | `UP` alert with how long the site was down |
 
-  - **RECOVERY Event**: Triggered when a host changes state from `DOWN` ➔ `UP`.
+Alerts go out by email (`mail` or `msmtp`) and/or Telegram, depending on `ENABLE_EMAIL` and `ENABLE_TELEGRAM` in `monitor.conf`. If sending fails, the error is logged and monitoring continues.
+
+## Testing
+
+All test cases, the exact commands and the results are in [tests/test_cases.md](tests/test_cases.md). To create the fake data used for the report tests:
+
+```
+./tests/generate_sample_log.sh
+```
+
+## Screenshots
+
+| Check of a working site | Recovery alert |
+|-------------------------|----------------|
+| ![Valid URL](tests/screenshots/01-valid-url.png) | ![Recovery alert](tests/screenshots/07-recovery-alert.png) |
+
+| Report on sample data | SSL certificate check |
+|-----------------------|-----------------------|
+| ![Report](tests/screenshots/10-report.png) | ![SSL check](tests/screenshots/14-ssl-check.png) |
+
+## Team
+
+| Name | Role | Files |
+|------|------|-------|
+| Owais | Project lead, core engine | `monitor.sh`, `config/`, repository setup |
+| <Name> | Reports | `report.sh` |
+| <Name> | Alert system | `lib/alert.sh` |
+| <Name> | Installer and log cleanup | `install.sh`, `cleanup.sh` |
+| <Name> | Utilities and SSL checker | `lib/utils.sh`, `lib/ssl_check.sh` |
+| <Name> | Testing, help text and documentation | `tests/`, `lib/help.sh`, `README.md` |
 
 ## Requirements
 
-- **OS**: Linux, macOS, or WSL (Windows Subsystem for Linux)
-
-- **Shell**: GNU Bash 4.0+
-
-- **Core Utilities**: `curl`, `awk`, `sed`, `grep`
-
-- **Mailer** _(Optional for email alerts)_: `mail`, `mailx`, or `msmtp`
+- **OS**: Linux or WSL. macOS works if Bash 4+ and GNU coreutils are installed (the default macOS Bash is too old).
+- **Shell**: Bash 4.0 or newer
+- **Tools**: `curl`, `awk`, `sed`, `grep`, `ping`, `openssl` (for the SSL check), `cron` (for scheduling)
+- **Optional**: `mail` or `msmtp` for email alerts
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License, see the [LICENSE](LICENSE) file.
